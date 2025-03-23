@@ -135,22 +135,25 @@ class UserProcess:
             kort={'kort_tip':kort_tip, 'kort_total':kort_total}
 
             if not_turnover:
-                response=self.session.get(f"https://no.gastrofix.com/icash/report/jr/Eventim/html?date=8&filter=0&type=13&format=&from={year}-{month}-{day}&to={year}-{month}-{day}")
-                faktura_location = response.json()['payload']['location']
-                faktura_response=self.session.get(faktura_location)
-                soup = BeautifulSoup(faktura_response.text, "html.parser")
-                gross_row = soup.find("span", string="Gross(NOK)")
-                tr_counts = gross_row.find_all_next("tr")
-            
-                faktura = {} # Lista di dizionari per ogni articolo
-                for tr in tr_counts[:-4]:
-                    td=tr.find_all("td")
-                    faktura_id=td[1].text.strip()
-                    total=td[5].text.strip()
-                    faktura[faktura_id] = total
+                a=not_turnover.find_all_next("tr")
+                for tr in a[:-2]:
+                    if tr.find("span", string="Faktura"):
+                        response=self.session.get(f"https://no.gastrofix.com/icash/report/jr/Eventim/html?date=8&filter=0&type=13&format=&from={year}-{month}-{day}&to={year}-{month}-{day}")
+                        faktura_location = response.json()['payload']['location']
+                        faktura_response=self.session.get(faktura_location)
+                        soup = BeautifulSoup(faktura_response.text, "html.parser")
+                        gross_row = soup.find("span", string="Gross(NOK)")
+                        tr_counts = gross_row.find_all_next("tr")
+                    
+                        faktura = {} # Lista di dizionari per ogni articolo
+                        for tr in tr_counts[:-4]:
+                            td=tr.find_all("td")
+                            faktura_id=td[1].text.strip()
+                            total=td[5].text.strip()
+                            faktura[faktura_id] = total
 
 
-                return app, kort, faktura
+                        return app, kort, faktura
 
             return app, kort
         
@@ -166,20 +169,21 @@ class UserProcess:
             # Find the 'Total' value (final total at the bottom)
             total_element = soup.find("span", string="Turnover")
             if not total_element:
-                return False, False, False, False
+                return "", "", "", ""
 
-            # Extract 'VISA' total and tip
+            # Extract 'VISA' total
             visa_row = soup.find("span", string="Visa")
             visa_total=visa_row.find_next("span").find_next("span").find_next("span").text if visa_row else ""
 
-            # Extract 'Mastercard' total and tip
+            # Extract 'Mastercard' total
             mastercard_row = soup.find("span", string="Mastercard")
             mastercard_total=mastercard_row.find_next("span").find_next("span").find_next("span").text if mastercard_row else ""
 
-            # Extract 'Bank Axept' total and tip
+            # Extract 'Bank Axept' total
             bank_axept_row = soup.find("span", string="Bank Axept")
             bank_axept_total=bank_axept_row.find_next("span").find_next("span").find_next("span").text if bank_axept_row else ""
 
+            # Extract 'Maestro' total
             maestro_row = soup.find("span", string="Maestro")
             maestro_total=maestro_row.find_next("span").find_next("span").find_next("span").text if maestro_row else ""
 
@@ -224,7 +228,7 @@ class UserProcess:
 
         try:
             result = self.get_turnover(turnover_location, month, day, year)
-            # Unpack the result with a default value for 'faktura'
+                # Unpack the result with a default value for 'faktura'
             if len(result) == 3:
                 app, kort, faktura = result
             else:
@@ -234,7 +238,6 @@ class UserProcess:
                 return
             visa, mastercard, bank_axept, maestro = self.get_cards_payments(cards_location)
             groups = self.get_groups(groups_location)
-
             return {
                 'day': day,
                 'app': app,
@@ -277,12 +280,16 @@ class UserProcess:
         sheet['D17'] = parse_number(data['groups'].get('Øl', ''))
         sheet['D18'] = parse_number(data['groups'].get('Cider/Rusbrus', ''))
         
-        sheet['D38'] = parse_number(data['cards']['bank_axept'].get('bank_axept_total', ''))
-        sheet['D39'] = parse_number(data['cards']['visa'].get('visa_total', ''))
-        sheet['D40'] = parse_number(data['cards']['mastercard'].get('mastercard_total', ''))
-        sheet['D41'] = parse_number(data['cards']['maestro'].get('maestro_total', ''))
-        sheet['D43'] = parse_number(data['app'].get('app_order_total', ''))
+        if data['cards']['bank_axept']:
+            sheet['D38'] = parse_number(data['cards']['bank_axept'].get('bank_axept_total', ''))
+        if data['cards']['visa']:
+            sheet['D39'] = parse_number(data['cards']['visa'].get('visa_total', ''))
+        if data['cards']['mastercard']:
+            sheet['D40'] = parse_number(data['cards']['mastercard'].get('mastercard_total', ''))
+        if data['cards']['maestro']:
+            sheet['D41'] = parse_number(data['cards']['maestro'].get('maestro_total', ''))
         
+        sheet['D43'] = parse_number(data['app'].get('app_order_total', ''))
         sheet['D107'] = parse_number(data['app'].get('app_order_tip', ''))
         sheet['D108'] = parse_number(data['kort'].get('kort_tip', ''))
 
@@ -311,7 +318,7 @@ class UserProcess:
         global users_sessions
         # create a copy of the dummy document using windows or linux
         uuid = os.urandom(16).hex()
-        os.system(f"cp {self.dummy_document} {uuid}.xlsx")
+        os.system(f"copy {self.dummy_document} {uuid}.xlsx")
         self.dummy_document = f"{uuid}.xlsx"
         wb = load_workbook(self.dummy_document)
         process_active[self.username] = "Writing data to the document..."
@@ -394,7 +401,7 @@ def login():
         return render_template('login.html')
     username = data.get('username')
     password = data.get('password')
-    avaialable_restaurants = {}
+    available_restaurants = {}
 
     if not username or not password:
         return jsonify({'error': 'Username and password are required'}), 400
@@ -416,16 +423,17 @@ def login():
         current_restaurant=response.json()['currentUser']['currentRestaurant']['name'].replace(' - Posthallen Drinkhub', '')
         for restaurant in response.json()['currentUser']['accessibleRestaurants']:
             # salva i restaurant as dictionary key as id and value as name
-            avaialable_restaurants[restaurant['id']] = restaurant['name'].replace(' - Posthallen Drinkhub', '')
-
+            available_restaurants[restaurant['id']] = restaurant['name'].replace(' - Posthallen Drinkhub', '')
+        available_restaurants.pop(40836)
+        available_restaurants.pop(40846)
         session.headers.update({'X-Xsrf-Token': session.cookies['XSRF-TOKEN']})
 
     # Crea un JWT per l'utente
         expiration_time = datetime.datetime.utcnow() + datetime.timedelta(hours=1)
         token = jwt.encode({'username': username, 'exp': expiration_time}, SECRET_KEY, algorithm='HS256')
         response = make_response(jsonify({'message': 'Login successful'}))
-        response.set_cookie('token', token, httponly=True, max_age=datetime.timedelta(hours=1))
-        users_sessions[username] = {'session': session, 'logged_in': True, 'current_restaurant': current_restaurant, 'avaialable_restaurants': avaialable_restaurants}
+        response.set_cookie('token', token, httponly=True)
+        users_sessions[username] = {'session': session, 'logged_in': True, 'current_restaurant': current_restaurant, 'available_restaurants': available_restaurants}
         return response
     return jsonify({'error': 'Invalid credentials'})
 
@@ -439,7 +447,7 @@ def get_restaurants():
     if username not in users_sessions or not users_sessions[username]['logged_in']:
         return jsonify({'error': 'User not logged in'}), 401
 
-    return jsonify(users_sessions[username]['avaialable_restaurants'])
+    return jsonify(users_sessions[username]['available_restaurants'])
 
 @app.route('/change_restaurant', methods=['POST'])
 def change_restaurant():
