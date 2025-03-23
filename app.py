@@ -449,6 +449,21 @@ def get_restaurants():
 
     return jsonify(users_sessions[username]['available_restaurants'])
 
+@app.route('/logout', methods=['GET'])
+def logout():
+    token = request.cookies.get('token')
+    if not token:
+        return jsonify({'error': 'Token is required'}), 400
+
+    username = decodeJWT(token)
+    if username in users_sessions:
+        users_sessions[username]['session'].close()
+        users_sessions.pop(username)
+
+    response = make_response(jsonify({'message': 'Logged out successfully'}))
+    response.set_cookie('token', '', httponly=True, expires=0)
+    return response
+
 @app.route('/change_restaurant', methods=['POST'])
 def change_restaurant():
     token = request.cookies.get('token')
