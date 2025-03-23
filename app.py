@@ -318,7 +318,7 @@ class UserProcess:
         global users_sessions
         # create a copy of the dummy document using windows or linux
         uuid = os.urandom(16).hex()
-        os.system(f"copy {self.dummy_document} {uuid}.xlsx")
+        os.system(f"cp {self.dummy_document} {uuid}.xlsx")
         self.dummy_document = f"{uuid}.xlsx"
         wb = load_workbook(self.dummy_document)
         process_active[self.username] = "Writing data to the document..."
