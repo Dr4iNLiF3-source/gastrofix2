@@ -390,7 +390,7 @@ def home():
 def login_page():
     # get the token from the cookie
     token = request.cookies.get('token')
-    if token:
+    if len(token) > 0:
         return redirect(url_for('dashboard'))
     return render_template('login.html')
 
@@ -460,7 +460,7 @@ def logout():
         users_sessions[username]['session'].close()
         users_sessions.pop(username)
 
-    response = make_response(jsonify({'message': 'Logged out successfully'}))
+    response = make_response(render_template('login.html'))
     response.set_cookie('token', '', httponly=True, expires=0)
     return response
 
