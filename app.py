@@ -11,6 +11,7 @@ from openpyxl import load_workbook
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 import re
+import threading
 
 #########################################################################################################################
 ###     CONFIGURAZIONE FLASK     ########################################################################################
@@ -36,6 +37,7 @@ files_directory = 'files'  # Cartella principale dove vengono salvati i file
 #########################################################################################################################
 
 class UserProcess:
+    removebrekk_lock = threading.Lock()
     def __init__(self, username, session, month, year):
         self.username = username
         self.session = session
@@ -57,7 +59,7 @@ class UserProcess:
         print(f"Processo avviato per l'utente {self.username}")
         process_active[self.username] = "Generating reports..."
         self.get_locations(self.month,self.year)
-        self.articles = self.process_locations_multithreaded(self.locations)
+        self.articles = self.process_locations(self.locations)
         self.make_document(self.articles)
 
         # Aggiorna la lista dei file e lo stato del processo
@@ -133,7 +135,8 @@ class UserProcess:
 
             app={'app_order_tip':app_order_tip, 'app_order_total':app_order_total}
             kort={'kort_tip':kort_tip, 'kort_total':kort_total}
-
+            brekk = False
+            faktura = {}
             if not_turnover:
                 a=not_turnover.find_all_next("tr")
                 for tr in a[:-2]:
@@ -145,17 +148,21 @@ class UserProcess:
                         gross_row = soup.find("span", string="Gross(NOK)")
                         tr_counts = gross_row.find_all_next("tr")
                     
-                        faktura = {} # Lista di dizionari per ogni articolo
                         for tr in tr_counts[:-4]:
                             td=tr.find_all("td")
                             faktura_id=td[1].text.strip()
                             total=td[5].text.strip()
                             faktura[faktura_id] = total
 
+                    if tr.find("span", string="Brekk"):
+                        brekk= True
 
-                        return app, kort, faktura
+                if faktura:
+                    return app, kort, faktura, brekk
+                else:
+                    return app, kort, brekk
 
-            return app, kort
+            return app, kort, brekk
         
         except Exception as e:
             pass
@@ -216,6 +223,107 @@ class UserProcess:
         except Exception as e:
             pass
 
+    def get_brekk(self,groups, day, month, year):
+
+        def parse_number(value):
+            try:
+                # Remove commas and convert to float
+                return float(value.replace(',', ''))
+            except (ValueError, AttributeError):
+                return value  # Return the original value if conversion fails
+            
+
+        url='https://no.gastrofix.com/icash/report/jr/Zreport_original_of_POS/html'
+
+        data= {
+            "date": 8,
+            "filter": 0,
+            "type": 2,
+            "format": "",
+            "from": f"{year}-{month}-{day}",
+            "to": f"{year}-{month}-{day}"
+        }
+        with UserProcess.removebrekk_lock:
+            response = self.session.post(url, data=data, headers={'Content-Type': 'application/x-www-form-urlencoded'})
+            location = response.json()['payload']['location']
+            brekk_response=self.session.get(location,proxies={'http': 'http://127.0.0.1:8080', 'https': 'http://127.0.0.1:8080'}, verify=False)
+            content = brekk_response.content  # Ottieni i byte grezzi
+            content = content.decode('utf-8', errors='ignore')  # Decodifica manualmente con UTF-8
+
+        soup = BeautifulSoup(content, "html.parser")
+        text = soup.get_text()
+
+        start = text.find('Salg per varegruppe')
+        end = text.find('Total', start)
+
+        # Prendere solo il testo compreso tra questi due punti
+        section = text[start:end]
+
+        # Pattern per trovare il nome dell'articolo e il suo valore
+        # Considerando che i valori potrebbero avere spazi non interrotti (\xa0)
+        pattern = r'([A-Za-zæøåÆØÅ]+)\.*:\(\d+\)([\d,]+)'
+
+        # Sostituiamo \xa0 con uno spazio normale per facilitare la lettura dei numeri
+        section = section.replace('\xa0', ' ')
+        section = section.replace(' ', '')
+
+        # Trova tutte le corrispondenze nel testo
+        matches = re.findall(pattern, section)
+
+        # Stampa i risultati
+        for match in matches:
+            item_name, item_value = match
+            groups[item_name] = float(item_value.replace(',', '.'))
+
+    def removebrekk(self, groups, day, month, year):
+
+        def parse_number(value):
+            try:
+                # Remove commas and convert to float
+                return float(value.replace(',', ''))
+            except (ValueError, AttributeError):
+                return value  # Return the original value if conversion fails
+            
+
+        url='https://no.gastrofix.com/icash/report/jr/Payment_ArticleSuperGroup_ByName/html'
+
+        data= {
+            "date": 8,
+            "filter": 0,
+            "type": 1,
+            "format": "",
+            "from": f"{year}-{month}-{day}",
+            "to": f"{year}-{month}-{day}"
+        }
+        with UserProcess.removebrekk_lock:
+            response = self.session.post(url, data=data, headers={'Content-Type': 'application/x-www-form-urlencoded'})
+            location = response.json()['payload']['location']
+            try:
+                brekk_response=self.session.get(location)
+                content = brekk_response.content  # Ottieni i byte grezzi
+                content = content.decode('utf-8', errors='ignore')  # Decodifica manualmente con UTF-8
+                soup = BeautifulSoup(content, "html.parser")
+
+                # Find the 'Total' value (final total at the bottom)
+                total_element = soup.find("span", string="None Total Revenue")
+                if not total_element:
+                    return False, False, False
+                # Extract 'Brekk' total
+                grouprow = total_element.find_all_next("span")
+                for i in range(0,(len(grouprow) - 8),6):
+
+                    article_name = grouprow[i +2].text.strip()
+                    article_brekk = grouprow[i + 7].text.strip()
+                    if article_name in groups:
+                        groups[article_name] = parse_number(groups[article_name]) - parse_number(article_brekk)
+                
+                
+
+            except Exception as e:
+                pass
+
+       
+
 
     def process_location(self,location_data):
         """Process a single location and return the result."""
@@ -229,15 +337,17 @@ class UserProcess:
         try:
             result = self.get_turnover(turnover_location, month, day, year)
                 # Unpack the result with a default value for 'faktura'
-            if len(result) == 3:
-                app, kort, faktura = result
+            if len(result) == 4:
+                app, kort, faktura, brekk = result
             else:
-                app, kort = result
+                app, kort, brekk = result
                 faktura = None  # Default value if 'faktura' is not returned
             if not app and not kort:
                 return
             visa, mastercard, bank_axept, maestro = self.get_cards_payments(cards_location)
             groups = self.get_groups(groups_location)
+            if brekk:
+                self.get_brekk(groups, day, month, year)
             return {
                 'day': day,
                 'app': app,
@@ -279,6 +389,8 @@ class UserProcess:
         sheet['D16'] = parse_number(data['groups'].get('Vin', ''))
         sheet['D17'] = parse_number(data['groups'].get('Øl', ''))
         sheet['D18'] = parse_number(data['groups'].get('Cider/Rusbrus', ''))
+        sheet['D19'] = parse_number(data['groups'].get('Te/kaffe', ''))
+        sheet['D20'] = parse_number(data['groups'].get('Annet', ''))
         
         if data['cards']['bank_axept']:
             sheet['D38'] = parse_number(data['cards']['bank_axept'].get('bank_axept_total', ''))
@@ -313,12 +425,22 @@ class UserProcess:
                 if result:
                     results.append(result)
         return results
+    
+    def process_locations(self, locations):
+        """Process all locations sequentially."""
+        results = []
+        process_active[self.username] = "Extracting data from the reports..."
+        for loc in locations:
+            result = self.process_location(loc)
+            if result:
+                results.append(result)
+        return results
 
     def make_document(self,articles):
         global users_sessions
         # create a copy of the dummy document using windows or linux
         uuid = os.urandom(16).hex()
-        os.system(f"cp {self.dummy_document} {uuid}.xlsx")
+        os.system(f"copy {self.dummy_document} {uuid}.xlsx")
         self.dummy_document = f"{uuid}.xlsx"
         wb = load_workbook(self.dummy_document)
         process_active[self.username] = "Writing data to the document..."
@@ -337,7 +459,7 @@ class UserProcess:
         if not os.path.exists(f"files/{users_sessions[self.username]['current_restaurant']}"):
             os.makedirs(f"files/{users_sessions[self.username]['current_restaurant']}")
         wb.save(f"files/{users_sessions[self.username]['current_restaurant']}/{filename}")
-        os.system(f"rm {self.dummy_document}")
+        os.system(f"del {self.dummy_document}")
         process_active[self.username] = "DONE"
         print(f"Document saved as {filename}")
 
@@ -390,7 +512,7 @@ def home():
 def login_page():
     # get the token from the cookie
     token = request.cookies.get('token')
-    if len(token) > 0:
+    if token :
         return redirect(url_for('dashboard'))
     return render_template('login.html')
 
@@ -424,8 +546,11 @@ def login():
         for restaurant in response.json()['currentUser']['accessibleRestaurants']:
             # salva i restaurant as dictionary key as id and value as name
             available_restaurants[restaurant['id']] = restaurant['name'].replace(' - Posthallen Drinkhub', '')
-        available_restaurants.pop(40836)
-        available_restaurants.pop(40846)
+        # remove the restaurant id 40836 and 40846 from the list
+        if 40836 in available_restaurants:
+            available_restaurants.pop(40836)
+        if 40846 in available_restaurants:
+            available_restaurants.pop(40846)
         session.headers.update({'X-Xsrf-Token': session.cookies['XSRF-TOKEN']})
 
     # Crea un JWT per l'utente
